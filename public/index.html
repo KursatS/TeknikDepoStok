@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="tr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TeknikDepo</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<header>
+  <div class="brand">⚙ TeknikDepo</div>
+  <div class="searchbox">
+    <input id="search" type="search" placeholder="PN veya parça adı ara…  (örn. 1234-AB, fırça, lidar)" autocomplete="off" autofocus>
+    <div id="results" class="results" hidden></div>
+  </div>
+  <nav id="tabs">
+    <button data-view="depo" class="active">Depo</button>
+    <button data-view="room">Oda (kuş bakışı)</button>
+    <button data-view="parts">Parçalar</button>
+    <button data-view="moves">Hareketler</button>
+    <button data-view="low">Azalanlar <span id="lowBadge" class="badge" hidden></span></button>
+  </nav>
+  <label class="editswitch"><input type="checkbox" id="editMode"> Düzenleme modu</label>
+  <a class="btn ghost" href="/api/backup" title="Veritabanını indir">Yedek al</a>
+</header>
+
+<main>
+  <section id="view-depo"></section>
+  <section id="view-room" hidden></section>
+  <section id="view-parts" hidden></section>
+  <section id="view-moves" hidden></section>
+  <section id="view-low" hidden></section>
+</main>
+
+<div id="modal" class="modal" hidden><div class="panel" id="panel"></div></div>
+<div id="toast" class="toast" hidden></div>
+<script src="app.js"></script>
+</body>
+</html>

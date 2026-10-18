@@ -1,0 +1,18 @@
+# Depo verisi (kişisel/şirket verisi) - asla repoya girmesin
+depo.db
+depo.db-*
+*.db
+*.sqlite
+*.sqlite3
+
+# Yedekler ve günlükler
+depo-yedek-*.db
+*.log
+
+# Araç / editör / sistem dosyaları
+node_modules/
+.claude/
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
