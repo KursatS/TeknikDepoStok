@@ -40,6 +40,7 @@ async function load() {
     section: new Map(S.sections.map((s) => [s.id, s])),
     byDrawer: new Map(), byPart: new Map(), alloc: new Map(),
   };
+  for (const p of S.parts) { p._pn = norm(p.pn); p._nm = norm(p.name); p._md = norm(p.models); p._cat = p.category || ''; }
   for (const dp of S.drawerParts) {
     if (!idx.byDrawer.has(dp.drawer_id)) idx.byDrawer.set(dp.drawer_id, []);
     idx.byDrawer.get(dp.drawer_id).push(dp);
@@ -60,8 +61,8 @@ const isLow = (p) => p.min_stock > 0 && total(p.id) < p.min_stock;
 function matchParts(qs) {
   const n = norm(qs);
   if (!n) return [];
-  return S.parts.filter((p) => norm(p.pn).includes(n) || norm(p.name).includes(n) || norm(p.models).includes(n))
-    .sort((a, b) => (norm(a.pn).startsWith(n) ? 0 : 1) - (norm(b.pn).startsWith(n) ? 0 : 1));
+  return S.parts.filter((p) => p._pn.includes(n) || p._nm.includes(n) || p._md.includes(n))
+    .sort((a, b) => (a._pn.startsWith(n) ? 0 : 1) - (b._pn.startsWith(n) ? 0 : 1) || (a._pn.includes(n) ? 0 : 1) - (b._pn.includes(n) ? 0 : 1));
 }
 function hitDrawers() {
   const m = new Map(); // drawer_id -> toplam adet
@@ -74,9 +75,9 @@ function renderResults() {
   if (!query.trim()) { box.hidden = true; return; }
   box.replaceChildren(...(list.length ? list.map((p) => {
     const locs = (idx.byPart.get(p.id) || []).map((dp) => `${placeName(idx.drawer.get(dp.drawer_id))} (${dp.qty})`);
-    return h('div', { class: 'item', onmousedown: (e) => { e.preventDefault(); gotoPart(p); } },
-      h('span', { class: 'pn' }, p.pn), ' ', p.name,
-      h('div', { class: 'where' }, locs.length ? '📍 ' + locs.join(' · ') : 'Hiçbir çekmeceye atanmamış'));
+    return h('div', { class: 'item withimg', onmousedown: (e) => { e.preventDefault(); gotoPart(p); } }, thumb(p),
+      h('div', {}, h('span', { class: 'pn' }, p.pn), ' ', p.name,
+        h('div', { class: 'where' }, locs.length ? '📍 ' + locs.join(' · ') : `Hiçbir çekmeceye atanmamış · stok ${p.total_qty}`)));
   }) : [h('div', { class: 'item' }, 'Eşleşen parça yok')]));
   box.hidden = false;
 }
@@ -249,7 +250,7 @@ function showDrawer(id) {
       toast(`${p.pn} ×${qty.value} → ${tech.value.trim()} (Servis ${svc.value.trim()})`);
       issuing = null; load();
     };
-    return h('tr', {}, h('td', { colspan: 3, style: 'background:var(--bg2)' },
+    return h('tr', {}, h('td', { colspan: 4, style: 'background:var(--bg2)' },
       h('div', { class: 'row' }, h('b', {}, 'Parça ver:'), qty, 'adet', svc, tech, dl,
         h('button', { class: 'btn', onclick: go }, 'Ver'), h('button', { class: 'btn ghost', onclick: () => { issuing = null; reopen(); } }, 'Vazgeç'))));
   };
@@ -257,7 +258,8 @@ function showDrawer(id) {
   const rows = items.flatMap((dp) => {
     const p = idx.part.get(dp.part_id);
     const main = h('tr', {},
-      h('td', {}, h('b', {}, p.pn), h('div', { class: 'hint' }, p.name)),
+      h('td', { style: 'width:52px' }, thumb(p)),
+      h('td', {}, h('b', { class: 'link', onclick: () => showPart(p.id) }, p.pn), h('div', { class: 'hint' }, p.name)),
       h('td', {}, h('span', { class: 'qty-ctl' }, h('span', { class: 'n' }, dp.qty))),
       h('td', {},
         h('button', { class: 'btn small', onclick: () => { issuing = p.id; reopen(); } }, 'Parça ver'), ' ',
@@ -286,12 +288,14 @@ function openPicker(drawerId) {
   const body = h('div', {});
   const draw = () => {
     const f = norm(filterText);
-    const list = S.parts.filter((p) => !f || norm(p.pn + p.name + p.models).includes(f));
-    const search = h('input', { class: 'filter', placeholder: 'PN veya ada göre ara…', value: filterText, oninput: (e) => { filterText = e.target.value; chosen = null; draw(); const i = body.querySelector('.filter'); i.focus(); i.setSelectionRange(99, 99); } });
+    const all = (f ? matchParts(filterText) : S.parts).slice().sort((a, b) => (pool(b.id) > 0) - (pool(a.id) > 0));
+    const list = all.slice(0, 100);
+    const search = h('input', { class: 'filter', placeholder: 'PN, ad veya model ara…', value: filterText, oninput: (e) => { filterText = e.target.value; chosen = null; draw(); const i = body.querySelector('.filter'); i.focus(); i.setSelectionRange(99, 99); } });
     const rows = list.map((p) => {
       const free = pool(p.id), here = (idx.byDrawer.get(drawerId) || []).find((x) => x.part_id === p.id);
       const sel = chosen === p.id;
       const main = h('tr', { style: (free < 1 ? 'opacity:.45;' : 'cursor:pointer;') + (sel ? 'background:var(--bg2)' : ''), onclick: () => { if (free >= 1) { chosen = sel ? null : p.id; draw(); } } },
+        h('td', { style: 'width:52px' }, thumb(p)),
         h('td', {}, h('b', {}, p.pn), h('div', { class: 'hint' }, p.name)),
         h('td', {}, `Toplam ${p.total_qty}`, h('div', { class: 'hint' }, here ? `Bu çekmecede ${here.qty}` : '')),
         h('td', { class: free < 1 ? 'neg' : 'pos' }, free < 1 ? 'Boşta yok' : `Boşta ${free}`));
@@ -303,7 +307,7 @@ function openPicker(drawerId) {
         await load(); showDrawer(drawerId);
       };
       qty.addEventListener('keydown', (e) => e.key === 'Enter' && go());
-      return [main, h('tr', {}, h('td', { colspan: 3, style: 'background:var(--bg2)' },
+      return [main, h('tr', {}, h('td', { colspan: 4, style: 'background:var(--bg2)' },
         h('div', { class: 'row' }, 'Bu çekmeceye', qty, `adet koy (en fazla ${free})`, h('button', { class: 'btn', onclick: go }, 'Çekmeceye ekle'))))];
     }).flat();
     body.replaceChildren(
@@ -311,6 +315,7 @@ function openPicker(drawerId) {
         h('button', { class: 'btn ghost small', onclick: () => showDrawer(drawerId) }, '← Çekmeceye dön')),
       h('div', { class: 'row' }, search),
       rows.length ? h('table', {}, h('tbody', {}, rows)) : h('div', { class: 'empty-note' }, S.parts.length ? 'Eşleşen parça yok.' : 'Önce "Parçalar" sekmesinden parça ekleyin.'),
+      all.length > list.length ? h('div', { class: 'hint', style: 'margin-top:6px' }, `İlk ${list.length} gösteriliyor (${all.length} eşleşme). Aramayı daraltın.`) : null,
       h('div', { class: 'hint', style: 'font-size:13px;margin-top:8px' }, 'Parçalar sekmesindeki toplam adetten boşta olanlar listelenir. Çekmeceye koymak toplamı değiştirmez, sadece boşta kalan miktarı azaltır.'));
   };
   draw();
@@ -320,23 +325,84 @@ function openPicker(drawerId) {
 
 // ---------- parçalar ----------
 let partFilter = '';
+let partCat = '', partOnlyStock = false;
+const PART_LIMIT = 200;
 function renderParts() {
   const root = $('#view-parts');
-  const f = norm(partFilter);
-  const list = S.parts.filter((p) => !f || norm(p.pn + p.name + p.models).includes(f));
-  const filter = h('input', { class: 'filter', placeholder: 'Listede filtrele…', value: partFilter, oninput: (e) => { partFilter = e.target.value; renderParts(); const i = $('#view-parts .filter'); i.focus(); i.setSelectionRange(99, 99); } });
+  let list = partFilter.trim() ? matchParts(partFilter) : S.parts;
+  if (partCat) list = list.filter((p) => p._cat === partCat);
+  if (partOnlyStock) list = list.filter((p) => p.total_qty > 0);
+  const shown = list.slice(0, PART_LIMIT);
+  const refocus = () => { const el = $('#view-parts .filter'); el.focus(); el.setSelectionRange(99, 99); };
+  const filter = h('input', { class: 'filter', placeholder: 'PN, ad veya model (örn. S8) ara…', value: partFilter, oninput: (e) => { partFilter = e.target.value; renderParts(); refocus(); } });
+  const cats = [...new Set(S.parts.map((p) => p._cat).filter(Boolean))].sort((x, y) => x.localeCompare(y, 'tr'));
+  const catSel = h('select', { onchange: (e) => { partCat = e.target.value; renderParts(); } }, h('option', { value: '' }, 'Tüm kategoriler'), cats.map((c) => h('option', { value: c, selected: c === partCat }, c)));
+  const onlyStock = h('label', { class: 'editswitch' }, h('input', { type: 'checkbox', checked: partOnlyStock, onchange: (e) => { partOnlyStock = e.target.checked; renderParts(); } }), 'Sadece stokta olanlar');
   const file = h('input', { type: 'file', accept: '.csv,.txt', hidden: true, onchange: importCsv });
   root.replaceChildren(
-    h('div', { class: 'toolbar' }, h('button', { class: 'btn', onclick: () => editPart() }, '+ Yeni parça'), filter,
+    h('div', { class: 'toolbar', style: 'flex-wrap:wrap' }, h('button', { class: 'btn', onclick: () => editPart() }, '+ Yeni parça'), filter, catSel, onlyStock,
       h('button', { class: 'btn ghost', onclick: () => file.click() }, 'CSV içe aktar'), file,
-      h('button', { class: 'btn ghost', onclick: exportCsv }, 'CSV dışa aktar')),
-    list.length ? h('table', {}, h('thead', {}, h('tr', {}, ['PN', 'Ad', 'Uyumlu modeller', 'Toplam', 'Çekmecede', 'Boşta', 'Min', 'Konum', ''].map((t) => h('th', {}, t)))),
-      h('tbody', {}, list.map((p) => h('tr', {},
-        h('td', {}, h('b', {}, p.pn)), h('td', {}, p.name), h('td', {}, p.models),
-        h('td', { class: isLow(p) ? 'neg' : '' }, total(p.id)), h('td', {}, alloc(p.id)), h('td', {}, pool(p.id)), h('td', {}, p.min_stock || ''),
+      h('button', { class: 'btn ghost', onclick: exportCsv }, 'CSV dışa aktar'),
+      S.catalogAvailable ? h('button', { class: 'btn ghost', title: 'export/roborock_data.json içindeki tüm parçaları, resimleri ve uyumlu cihazları aktarır', onclick: importCatalog }, 'Roborock kataloğunu aktar') : null),
+    h('div', { class: 'hint', style: 'margin:-6px 0 10px' }, `${list.length} parça` + (list.length > shown.length ? ` – ilk ${shown.length} gösteriliyor, aramayla daraltın` : '')),
+    shown.length ? h('table', {}, h('thead', {}, h('tr', {}, ['', 'PN', 'Ad', 'Kategori', 'Toplam', 'Çekmecede', 'Boşta', 'Min', 'Konum', ''].map((t) => h('th', {}, t)))),
+      h('tbody', {}, shown.map((p) => h('tr', {},
+        h('td', { style: 'width:52px' }, thumb(p)),
+        h('td', {}, h('b', { class: 'link', onclick: () => showPart(p.id) }, p.pn)), h('td', {}, h('span', { class: 'link', onclick: () => showPart(p.id) }, p.name)), h('td', { class: 'hint' }, p.category),
+        h('td', { class: isLow(p) ? 'neg' : '' }, total(p.id)), h('td', {}, alloc(p.id)), h('td', {}, pool(p.id)), h('td', {}, p.min_stock || '–'),
         h('td', {}, (idx.byPart.get(p.id) || []).map((dp) => h('span', { class: 'pill', onclick: () => showDrawer(dp.drawer_id) }, `${placeName(idx.drawer.get(dp.drawer_id))} ×${dp.qty}`))),
-        h('td', {}, h('button', { class: 'btn ghost small', onclick: () => editPart(p) }, 'Düzenle'),
+        h('td', { style: 'white-space:nowrap' }, h('button', { class: 'btn ghost small', onclick: () => editPart(p) }, 'Düzenle'),
           ' ', h('button', { class: 'btn ghost small', onclick: () => gotoPart(p) }, 'Bul')))))) : h('div', { class: 'empty-note' }, 'Parça yok.'));
+}
+async function importCatalog() {
+  if (!confirm('Roborock kataloğu (export klasörü) içe aktarılsın mı?\n\nYeni parçalar stok 0 ile eklenir. Mevcut parçalarınızın stok, minimum ve notları korunur; resim, kategori ve uyumlu cihaz bilgileri güncellenir.')) return;
+  toast('Katalog aktarılıyor, lütfen bekleyin…');
+  const r = await api('POST', '/api/catalog/import');
+  toast(`Katalog aktarıldı: ${r.added} yeni, ${r.updated} güncellendi, ${r.machines} cihaz` + (r.skipped ? `, ${r.skipped} atlandı` : ''));
+  load();
+}
+const imgUrl = (rel) => '/img/' + rel.split('/').map(encodeURIComponent).join('/');
+function thumb(p, size = 44) {
+  return p.img ? h('img', { class: 'thumb', src: imgUrl(p.img), loading: 'lazy', alt: '', style: `width:${size}px;height:${size}px`, onerror: (e) => (e.target.style.visibility = 'hidden') })
+    : h('div', { class: 'thumb none', style: `width:${size}px;height:${size}px` });
+}
+// Parça detay penceresi: resimler, ölçüler, uyumlu cihazlar, stok
+async function showPart(id) {
+  const d = await api('GET', `/api/parts/${id}/detail`);
+  const p = idx.part.get(id);
+  const info = d.info || {};
+  const big = h('img', { class: 'bigimg', src: d.images[0] ? imgUrl(d.images[0]) : '', alt: '', hidden: !d.images.length });
+  const gallery = h('div', { class: 'gallery' }, d.images.map((src) => h('img', { src: imgUrl(src), loading: 'lazy', onclick: () => (big.src = imgUrl(src)) })));
+  const dim = (o) => (o && (o.length || o.width || o.height) ? `${o.length ?? '?'} × ${o.width ?? '?'} × ${o.height ?? '?'} mm` : null);
+  const yes = (v) => (v === true ? 'Evet' : v === false ? 'Hayır' : null);
+  const facts = [['Kategori', d.category], ['İngilizce ad', d.name_en], ['Ölçü', dim(info.dimensions_mm)], ['Ağırlık', info.weight_kg ? info.weight_kg + ' kg' : null],
+    ['Malzeme', info.material_tr], ['MOQ', info.moq], ['RMA', yes(info.is_rma)], ['Elektrikli', yes(info.is_electrical)], ['Mıknatıslı', yes(info.is_magnetic)], ['Katalog kodu', info.catalog_code]]
+    .filter(([, v]) => v != null && v !== '');
+  let mFilter = '';
+  const mBox = h('div', { class: 'machines' });
+  const drawM = () => {
+    const f = norm(mFilter);
+    const ms = d.machines.filter((m) => !f || norm(m.name + m.sn + m.code).includes(f));
+    mBox.replaceChildren(...ms.slice(0, 300).map((m) => h('div', { class: 'pill', style: 'cursor:default', title: m.title || '' }, (m.name || m.code))), ms.length > 300 ? h('div', { class: 'hint' }, `+${ms.length - 300} daha`) : '');
+  };
+  drawM();
+  const locs = (idx.byPart.get(id) || []).map((dp) => h('span', { class: 'pill', onclick: () => showDrawer(dp.drawer_id) }, `${placeName(idx.drawer.get(dp.drawer_id))} ×${dp.qty}`));
+  openModal(h('div', {},
+    h('div', { class: 'row' }, h('h3', { style: 'margin:0' }, d.pn), h('span', { style: 'flex:1' }),
+      h('button', { class: 'btn ghost small', onclick: () => editPart(p) }, 'Düzenle'), h('button', { class: 'btn ghost small', onclick: () => { closeModal(); gotoPart(p); } }, 'Depoda bul'),
+      h('button', { class: 'btn ghost small', onclick: closeModal }, 'Kapat')),
+    h('div', { style: 'font-size:16px;margin-bottom:10px' }, d.name),
+    h('div', { class: 'partdetail' },
+      h('div', {}, big, gallery, d.images.length ? null : h('div', { class: 'empty-note' }, 'Resim yok')),
+      h('div', {},
+        h('table', { class: 'facts' }, h('tbody', {},
+          h('tr', {}, h('td', { class: 'hint' }, 'Stok'), h('td', {}, h('b', {}, `Toplam ${d.total_qty}`), ` · çekmecede ${alloc(id)} · boşta ${pool(id)}` + (d.min_stock ? ` · min ${d.min_stock}` : ''))),
+          facts.map(([k, v]) => h('tr', {}, h('td', { class: 'hint' }, k), h('td', {}, String(v)))))),
+        locs.length ? h('div', { class: 'row' }, h('span', { class: 'hint' }, 'Konum:'), locs) : null,
+        info.alternatives?.length ? h('div', { class: 'hint', style: 'margin-top:8px' }, 'Alternatif: ' + info.alternatives.join(' · ')) : null)),
+    h('h3', { style: 'margin-top:16px' }, `Uyumlu cihazlar (${d.machines.length})`),
+    d.machines.length > 12 ? h('input', { class: 'filter', placeholder: 'Cihaz ara (örn. S8, Q Revo)…', style: 'margin-bottom:8px', oninput: (e) => { mFilter = e.target.value; drawM(); } }) : null,
+    d.machines.length ? mBox : h('div', { class: 'hint' }, d.models || 'Bilgi yok')));
 }
 function editPart(p) {
   const f = {

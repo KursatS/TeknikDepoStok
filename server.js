@@ -8,6 +8,9 @@ const { DatabaseSync } = require('node:sqlite');
 const PORT = Number(process.env.PORT) || 5056;
 const PUBLIC = path.join(__dirname, 'public');
 const DB_FILE = process.env.DB_FILE || path.join(__dirname, 'depo.db');
+// Roborock katalog paketi (roborock_data.json + images/)
+const EXPORT_DIR = process.env.EXPORT_DIR || path.join(__dirname, 'export');
+const CATALOG_FILE = path.join(EXPORT_DIR, 'roborock_data.json');
 
 const db = new DatabaseSync(DB_FILE);
 db.exec(`
@@ -78,6 +81,18 @@ const addCol = (table, col, def) => {
 };
 // Stok havuzu: parts.total_qty = depodaki toplam adet; çekmecelere dağıtılan kısım drawer_parts'ta.
 // Eski veriyi taşı: toplam = çekmecelerdeki mevcut toplam
+// Katalog alanları
+addCol('parts', 'category', "TEXT NOT NULL DEFAULT ''");
+addCol('parts', 'name_en', "TEXT NOT NULL DEFAULT ''");
+addCol('parts', 'images', "TEXT NOT NULL DEFAULT '[]'");
+addCol('parts', 'info', "TEXT NOT NULL DEFAULT '{}'");
+addCol('parts', 'machine_codes', "TEXT NOT NULL DEFAULT ''");
+db.exec(`CREATE TABLE IF NOT EXISTS machines (
+  code TEXT PRIMARY KEY,
+  name TEXT NOT NULL DEFAULT '',
+  title TEXT NOT NULL DEFAULT '',
+  sn TEXT NOT NULL DEFAULT ''
+)`);
 if (addCol('parts', 'total_qty', 'INTEGER NOT NULL DEFAULT 0')) {
   db.exec(`UPDATE parts SET total_qty = COALESCE((SELECT SUM(qty) FROM drawer_parts WHERE part_id = parts.id), 0)`);
 }
@@ -160,12 +175,58 @@ const route = (method, pattern, fn) => routes.push({ method, re: new RegExp('^' 
 route('GET', '/api/state', () => ({
   sections: q(`SELECT * FROM sections ORDER BY sort, id`).all(),
   drawers: q(`SELECT * FROM drawers ORDER BY section_id, r, c`).all(),
-  parts: q(`SELECT * FROM parts ORDER BY pn`).all(),
+  parts: q(`SELECT id, pn, name, models, min_stock, note, total_qty, category, json_extract(images, '$[0]') AS img FROM parts ORDER BY pn`).all(),
   drawerParts: q(`SELECT * FROM drawer_parts WHERE qty > 0`).all(),
   technicians: q(`SELECT name FROM technicians ORDER BY name COLLATE NOCASE`).all().map((t) => t.name),
   roomItems: q(`SELECT * FROM room_items ORDER BY id`).all(),
   pnFormat: PN_FORMAT,
+  catalogAvailable: fs.existsSync(CATALOG_FILE),
 }));
+
+// Parça detayı: tüm resimler, ölçüler, uyumlu cihazlar
+route('GET', '/api/parts/:id/detail', ({ params }) => {
+  const p = q(`SELECT * FROM parts WHERE id = ?`).get(params.id);
+  if (!p) throw new HttpError(404, 'Parça bulunamadı');
+  const codes = p.machine_codes ? p.machine_codes.split(',') : [];
+  const getM = q(`SELECT * FROM machines WHERE code = ?`);
+  return { ...p, images: JSON.parse(p.images || '[]'), info: JSON.parse(p.info || '{}'), machines: codes.map((c) => getM.get(c) || { code: c, name: '', sn: '' }) };
+});
+
+// Katalog kodu 9.01.4980 -> depo PN biçimi 09.01.4980 (ilk grup sıfırla doldurulur)
+const padPn = (code) => String(code).split('.').map((g, i) => g.padStart(PN_FORMAT[i] || g.length, '0')).join('.');
+const shortMachine = (m) => (m.name || m.title || m.code).split('-')[0].trim();
+
+// Roborock kataloğunu içe aktar. Mevcut parçalarda stok/min/not korunur, katalog bilgileri güncellenir.
+route('POST', '/api/catalog/import', () => {
+  if (!fs.existsSync(CATALOG_FILE)) throw new HttpError(404, 'export/roborock_data.json bulunamadı');
+  const data = JSON.parse(fs.readFileSync(CATALOG_FILE, 'utf8'));
+  const machines = new Map(data.machines.map((m) => [m.code, m]));
+  return tx(() => {
+    const insM = q(`INSERT INTO machines (code, name, title, sn) VALUES (?,?,?,?)
+      ON CONFLICT(code) DO UPDATE SET name = excluded.name, title = excluded.title, sn = excluded.sn`);
+    for (const m of data.machines) insM.run(m.code, str(m.name), str(m.title), str(m.sn));
+    const find = q(`SELECT id, name FROM parts WHERE pn = ?`);
+    const upd = q(`UPDATE parts SET name = ?, models = ?, category = ?, name_en = ?, images = ?, info = ?, machine_codes = ? WHERE id = ?`);
+    const ins = q(`INSERT INTO parts (pn, name, models, min_stock, note, total_qty, category, name_en, images, info, machine_codes) VALUES (?,?,?,0,'',0,?,?,?,?,?)`);
+    let added = 0, updated = 0, skipped = 0;
+    for (const m of data.materials) {
+      const pn = padPn(m.code);
+      if (!PN_RE.test(pn)) { skipped++; continue; }
+      const codes = m.compatible_machine_codes || [];
+      const models = [...new Set(codes.map((c) => machines.get(c)).filter(Boolean).map(shortMachine))].join(', ');
+      const info = {
+        dimensions_mm: m.dimensions_mm, weight_kg: m.weight_kg, box_dimensions_mm: m.box_dimensions_mm, box_weight_kg: m.box_weight_kg,
+        moq: m.moq, can_reissue: m.can_reissue, is_rma: m.is_rma, is_magnetic: m.is_magnetic, is_electrical: m.is_electrical,
+        material_tr: m.material_tr, alternatives: m.alternatives || [], catalog_code: m.code,
+      };
+      const vals = [models, str(m.category), str(m.title_en), JSON.stringify(m.images || []), JSON.stringify(info), codes.join(',')];
+      const ex = find.get(pn);
+      if (ex) { upd.run(ex.name || str(m.title_tr), ...vals, ex.id); updated++; }
+      else { ins.run(pn, str(m.title_tr), ...vals); added++; }
+    }
+    return { added, updated, skipped, machines: data.machines.length };
+  });
+});
 
 route('POST', '/api/sections', ({ body }) => tx(() => {
   const name = str(body.name) || 'Yeni Bölüm';
@@ -385,6 +446,15 @@ const server = http.createServer((req, res) => {
       }
     });
     return;
+  }
+  // katalog resimleri: /img/images/<kod>/<dosya>  -> export/images/...
+  if (url.pathname.startsWith('/img/')) {
+    const imgRoot = path.join(EXPORT_DIR, 'images');
+    const file = path.join(EXPORT_DIR, path.normalize(decodeURIComponent(url.pathname.slice(5))));
+    if (!file.startsWith(imgRoot + path.sep) || !fs.existsSync(file)) return send(res, 404, 'Bulunamadı');
+    const ext = path.extname(file).toLowerCase();
+    res.writeHead(200, { 'Content-Type': ext === '.png' ? 'image/png' : 'image/jpeg', 'Cache-Control': 'max-age=604800' });
+    return fs.createReadStream(file).pipe(res);
   }
   // statik dosyalar
   let rel = decodeURIComponent(url.pathname);

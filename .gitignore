@@ -16,3 +16,6 @@ node_modules/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Roborock katalog paketi (1 GB+ resim) - repoya girmez
+export/
